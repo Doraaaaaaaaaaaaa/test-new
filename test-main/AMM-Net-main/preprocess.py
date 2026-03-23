@@ -40,17 +40,5 @@ normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
 transform_test = transforms.Compose([
     transforms.Resize(size=(448, 448)),
     transforms.ToTensor(),
-    normalize
-])
-
-clip_normalize = transforms.Normalize(
-    mean=[0.48145466, 0.4578275, 0.40821073],
-    std=[0.26862954, 0.26130258, 0.27577711]
-)
-
-transform_att = transforms.Compose([
-    transforms.Resize(size=(224, 224)),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    clip_normalize
+    normalize,
 ])

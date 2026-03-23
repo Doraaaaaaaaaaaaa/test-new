@@ -44,40 +44,35 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--checkpoint", type=str, default="")
-    parser.add_argument("--freeze_clip", action="store_true")
     parser.add_argument("--no_amp", action="store_true", help="禁用混合精度")
     parser.add_argument(
-        "--precompute_clip",
+        "--parn_pretrained",
         type=str,
         default="",
-        help="预计算CLIP特征缓存目录，或 clip_features.pt 文件路径；留空则不使用缓存",
+        help="PARN属性编码器预训练权重路径；留空则随机初始化",
+    )
+    parser.add_argument(
+        "--freeze_parn",
+        action="store_true",
+        help="冻结PARN属性编码器权重",
     )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
-    if args.precompute_clip and not args.freeze_clip:
-        raise ValueError("--precompute_clip 仅能与 --freeze_clip 一起使用；否则 CLIP 图像分支不会被训练。")
-
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     bert = BertModel.from_pretrained("bert-base-uncased")
 
-    model = catNet(bert, freeze_clip=args.freeze_clip).to(device)
+    model = catNet(
+        bert,
+        parn_pretrained_path=args.parn_pretrained if args.parn_pretrained else None,
+        freeze_parn=args.freeze_parn,
+    ).to(device)
     start_epoch = 1
 
-    train_ds = AVACaptionsDataset(
-        args.train_csv,
-        args.images_dir,
-        tokenizer,
-        clip_feature_path=args.precompute_clip,
-    )
-    val_ds = AVACaptionsDataset(
-        args.val_csv,
-        args.images_dir,
-        tokenizer,
-        clip_feature_path=args.precompute_clip,
-    )
+    train_ds = AVACaptionsDataset(args.train_csv, args.images_dir, tokenizer)
+    val_ds = AVACaptionsDataset(args.val_csv, args.images_dir, tokenizer)
 
     train_loader = DataLoader(
         train_ds,
@@ -135,15 +130,14 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         running = 0.0
 
-        for step, (image, text_ids, text_mask, image_att_or_feat, y) in enumerate(train_loader, 1):
+        for step, (image, text_ids, text_mask, y) in enumerate(train_loader, 1):
             image = image.to(device, non_blocking=True)
             text_ids = text_ids.to(device, non_blocking=True)
             text_mask = text_mask.to(device, non_blocking=True)
-            image_att_or_feat = image_att_or_feat.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
 
             with autocast(enabled=use_amp):
-                out = model(image, text_ids, text_mask, image_att_or_feat)
+                out = model(image, text_ids, text_mask)
                 loss = criterion(out, y) / args.accum_steps
 
             scaler.scale(loss).backward()
@@ -167,15 +161,14 @@ def main():
         gt_means_all = []
 
         with torch.no_grad():
-            for image, text_ids, text_mask, image_att_or_feat, y in val_loader:
+            for image, text_ids, text_mask, y in val_loader:
                 image = image.to(device, non_blocking=True)
                 text_ids = text_ids.to(device, non_blocking=True)
                 text_mask = text_mask.to(device, non_blocking=True)
-                image_att_or_feat = image_att_or_feat.to(device, non_blocking=True)
                 y = y.to(device, non_blocking=True)
 
                 with autocast(enabled=use_amp):
-                    out = model(image, text_ids, text_mask, image_att_or_feat)
+                    out = model(image, text_ids, text_mask)
 
                 batch_loss = criterion(out, y).item()
                 val_loss += batch_loss
@@ -202,7 +195,7 @@ def main():
             f"val_srcc={val_srcc:.4f}"
         )
 
-        ckpt_path = os.path.join(checkpoint_dir, f"ammnet_clipattr_epoch{epoch}.pt")
+        ckpt_path = os.path.join(checkpoint_dir, f"ammnet_parn_epoch{epoch}.pt")
         torch.save(
             {
                 "epoch": epoch,
