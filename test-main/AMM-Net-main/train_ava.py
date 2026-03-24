@@ -49,12 +49,15 @@ def main():
         "--parn_pretrained",
         type=str,
         default="",
-        help="PARN属性编码器预训练权重路径；留空则随机初始化",
+        help=(
+            "预训练权重路径。可传入完整的 AMM-Net.pt（同时加载 img_attr 和 img_enc 权重），"
+            "或仅含 PARN 属性编码器的 state_dict；留空则随机初始化。"
+        ),
     )
     parser.add_argument(
         "--freeze_parn",
         action="store_true",
-        help="冻结PARN属性编码器权重",
+        help="冻结PARN属性编码器的backbone+bottleneck权重（attr_projs仍可训练）",
     )
     args = parser.parse_args()
 

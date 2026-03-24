@@ -288,9 +288,13 @@ class catNet(nn.Module):
 
     Args:
         bert               : pre-loaded BertModel
-        parn_pretrained_path : optional path to a PARN checkpoint for the
-                               attribute encoder (None = random init)
-        freeze_parn        : freeze PARN encoder weights after loading
+        parn_pretrained_path : path to either:
+                               * the full AMM-Net.pt (flat OrderedDict; both
+                                 ``img_attr.*`` and ``img_enc.*`` weights are
+                                 loaded automatically), or
+                               * a standalone PARN state_dict.
+                               None = random init.
+        freeze_parn        : freeze PARN backbone + bottleneck weights
 
     Forward:
         image      : (B, 3, 448, 448)  — ImageNet-normalised
@@ -319,6 +323,29 @@ class catNet(nn.Module):
         self.fc1     = nn.Linear(D * 2, 256)
         self.fc2     = nn.Linear(256, 10)
         self.softmax = nn.Softmax(dim=1)
+
+        # Load Swin weights from the same AMM-Net.pt if provided
+        if parn_pretrained_path is not None:
+            self._load_swin_from_ckpt(parn_pretrained_path)
+
+    def _load_swin_from_ckpt(self, path: str):
+        """Load img_enc.* weights from an AMM-Net.pt checkpoint into self.img_enc."""
+        import os
+        if not os.path.exists(path):
+            return
+        ckpt = torch.load(path, map_location="cpu")
+        # Only proceed if this looks like the full AMM-Net checkpoint
+        if not any(k.startswith("img_enc.") for k in ckpt):
+            return
+        swin_state = {
+            k[len("img_enc."):]: v
+            for k, v in ckpt.items()
+            if k.startswith("img_enc.")
+        }
+        missing, unexpected = self.img_enc.load_state_dict(swin_state, strict=False)
+        if missing:
+            print(f"catNet Swin: missing keys: {missing[:5]}{'...' if len(missing)>5 else ''}")
+        print(f"catNet: loaded img_enc (Swin) weights from {path}")
 
     def forward(self, image, text, text_mask):
         # ── Text: 4-level hierarchical encoding ─────────────────────────────
