@@ -137,6 +137,24 @@ class PARNAttributeEncoder(nn.Module):
 
     # ── Forward ───────────────────────────────────────────────────────────────
 
+    def forward_from_cache(self, g: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        """
+        Skip backbone and bottleneck; only run trainable attr_projs.
+        Use this when g and scores have been precomputed and cached.
+
+        Args:
+            g:      (B, 2048)  cached ResNet-50 global features
+            scores: (B, 11)    cached attribute scores from bottleneck
+        Returns:
+            Fa: (B, NUM_ATTRS, out_dim)
+        """
+        tokens = []
+        for i in range(NUM_ATTRS):
+            z_i = scores[:, i:i + 1]
+            a_i = self.attr_projs[i](torch.cat([g, z_i], dim=-1))
+            tokens.append(a_i.unsqueeze(1))
+        return torch.cat(tokens, dim=1)
+
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         """
         Args:

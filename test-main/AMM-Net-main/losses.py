@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def binary_accuracy(y_pred, input_label, bins=10):
@@ -82,6 +83,27 @@ class emd_loss(nn.Module):
             loss += l1loss
 
         return loss
+
+
+def pairwise_rank_loss(pred_mean, gt_mean, margin=0.2):
+    """
+    Batch-wise pairwise margin ranking loss.
+    For all pairs (i,j) where gt_mean[i] > gt_mean[j],
+    penalise if pred_mean[i] - pred_mean[j] < margin.
+
+    Args:
+        pred_mean: (B,) predicted mean scores
+        gt_mean:   (B,) ground-truth mean scores
+        margin:    minimum required score gap
+    Returns:
+        scalar loss
+    """
+    diff_pred = pred_mean.unsqueeze(1) - pred_mean.unsqueeze(0)   # (B, B)
+    diff_gt   = gt_mean.unsqueeze(1)   - gt_mean.unsqueeze(0)     # (B, B)
+    mask      = (diff_gt > 0).float()                              # pairs where i > j
+    rank_loss = F.relu(margin - diff_pred) * mask
+    n_pairs   = mask.sum().clamp(min=1)
+    return rank_loss.sum() / n_pairs
 
 
 class AverageMeter:

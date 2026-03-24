@@ -17,11 +17,11 @@ from attr_parn import PARNAttributeEncoder
 from swin_transformer import swin_base_patch4_window7_224_in22k
 
 # ── Shared hyper-parameters ──────────────────────────────────────────────────
-D = 2048           # unified hidden dimension
+D = 512            # unified hidden dimension
 NUM_HEADS = 8      # attention heads (D must be divisible by NUM_HEADS)
 NUM_HOPS = 3       # reasoning hops
 SWIN_DIMS = [256, 512, 1024, 1024]   # Swin-Base output dims for 448×448 input
-VISUAL_POOL = 196  # pool every visual stage to this many tokens
+VISUAL_POOL = 64   # pool every visual stage to this many tokens
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -171,11 +171,16 @@ class DualStateReasoning(nn.Module):
     """
     Attribute-prior driven dual-state GRU reasoning.
 
-    Maintains two states: visual state Sv and text state St.
+    Maintains per-attribute states: Sv (B, 11, D) and St (B, 11, D).
+
+    Initialisation:
+      λ_i,l (11×4) learnable weights — softmax over 4 levels per attribute →
+      weighted sum of pooled Mv/Mt levels → phi projection → initial state.
+
     Each hop:
-      - Sv attends (self) to Mv_mem and (cross) to Mt_mem.
-      - St attends (self) to Mt_mem and (cross) to Mv_mem.
-      - Both states are updated via attribute-conditioned GRU gates.
+      - Sv (B, 11, D) attends (self) to Mv_mem and (cross) to Mt_mem.
+      - St (B, 11, D) attends (self) to Mt_mem and (cross) to Mv_mem.
+      - GRU r and z gates both conditioned on Fa[:,i,:] (per-attribute token).
 
     Args:
         Mv   : list of 4 × (B, 196, D)
@@ -184,17 +189,21 @@ class DualStateReasoning(nn.Module):
         text_mask : (B, seq) — 1 for real, 0 for padding (optional)
 
     Returns:
-        (B, D*2)  — concatenation of final Sv and St
+        (B, D*2)  — mean-pooled Sv and St concatenated
     """
 
     def __init__(self):
         super().__init__()
 
-        # State initialisation projections
-        self.phi_v = nn.Sequential(nn.Linear(D * 2, D), nn.Tanh())
-        self.phi_t = nn.Sequential(nn.Linear(D * 2, D), nn.Tanh())
+        # ── Per-attribute level-wise init weights ────────────────────────────
+        self.lambda_v = nn.Parameter(torch.ones(11, 4) / 4.0)   # (11, 4)
+        self.lambda_t = nn.Parameter(torch.ones(11, 4) / 4.0)   # (11, 4)
 
-        # Self-attention heads
+        # State initialisation projections: D → D (shared across attributes)
+        self.phi_v = nn.Sequential(nn.Linear(D, D), nn.Tanh())
+        self.phi_t = nn.Sequential(nn.Linear(D, D), nn.Tanh())
+
+        # Self-attention heads (query: (B,11,D), key/value: memory bank)
         self.att_v_self = nn.MultiheadAttention(D, NUM_HEADS, batch_first=True, dropout=0.1)
         self.att_t_self = nn.MultiheadAttention(D, NUM_HEADS, batch_first=True, dropout=0.1)
 
@@ -202,18 +211,14 @@ class DualStateReasoning(nn.Module):
         self.att_t2v = nn.MultiheadAttention(D, NUM_HEADS, batch_first=True, dropout=0.1)
         self.att_v2t = nn.MultiheadAttention(D, NUM_HEADS, batch_first=True, dropout=0.1)
 
-        # Attribute prior projections
-        self.W_av = nn.Linear(D, D)
-        self.W_at = nn.Linear(D, D)
-
-        # Visual GRU gates
-        self.W_rv = nn.Linear(D * 4, D)   # reset  (uses attr)
-        self.W_zv = nn.Linear(D * 3, D)   # update
-        self.W_hv = nn.Linear(D * 3, D)   # candidate
+        # Visual GRU gates (linear operates on last dim → broadcasts over (B,11,…))
+        self.W_rv = nn.Linear(D * 4, D)   # reset:     [S, self, cross, a_i]
+        self.W_zv = nn.Linear(D * 4, D)   # update:    [S, self, cross, a_i]
+        self.W_hv = nn.Linear(D * 3, D)   # candidate: [r*S, self, cross]
 
         # Text GRU gates
         self.W_rt = nn.Linear(D * 4, D)
-        self.W_zt = nn.Linear(D * 3, D)
+        self.W_zt = nn.Linear(D * 4, D)
         self.W_ht = nn.Linear(D * 3, D)
 
         self.hops = NUM_HOPS
@@ -223,63 +228,55 @@ class DualStateReasoning(nn.Module):
         Mv_mem = torch.cat(Mv, dim=1)   # (B, 4*196=784, D)
         Mt_mem = torch.cat(Mt, dim=1)   # (B, 4*seq,     D)
 
-        # Text key-padding mask for the concatenated memory (4 repetitions)
         if text_mask is not None:
-            kpm_t = ~text_mask.bool()              # (B, seq)
-            kpm_t_mem = kpm_t.repeat(1, 4)         # (B, 4*seq)
+            kpm_t = ~text_mask.bool()
+            kpm_t_mem = kpm_t.repeat(1, 4)   # (B, 4*seq)
         else:
             kpm_t_mem = None
 
-        # ── Attribute prior vectors ──────────────────────────────────────────
-        Fa_mean = Fa.mean(dim=1)        # (B, D)
-        a_v = self.W_av(Fa_mean)        # (B, D)
-        a_t = self.W_at(Fa_mean)        # (B, D)
+        # ── λ_i,l weighted per-attribute state initialisation ────────────────
+        Mv_pool = torch.stack([mv.mean(1) for mv in Mv], dim=0)  # (4, B, D)
+        Mt_pool = torch.stack([mt.mean(1) for mt in Mt], dim=0)  # (4, B, D)
 
-        # ── Initialise dual states from the two deepest levels ───────────────
-        Sv = self.phi_v(torch.cat([Mv[-1].mean(1), Mv[-2].mean(1)], dim=-1))  # (B, D)
-        St = self.phi_t(torch.cat([Mt[-1].mean(1), Mt[-2].mean(1)], dim=-1))  # (B, D)
+        lw_v = F.softmax(self.lambda_v, dim=1)   # (11, 4)
+        lw_t = F.softmax(self.lambda_t, dim=1)   # (11, 4)
+
+        # einsum: lambda(11,4) × pool(4,B,D) → (B, 11, D)
+        Sv = self.phi_v(torch.einsum('il,lbd->bid', lw_v, Mv_pool))  # (B, 11, D)
+        St = self.phi_t(torch.einsum('il,lbd->bid', lw_t, Mt_pool))  # (B, 11, D)
 
         # ── Iterative GRU reasoning ──────────────────────────────────────────
         for _ in range(self.hops):
-            # Visual self-attention: Sv queries Mv_mem
-            v_self, _ = self.att_v_self(
-                Sv.unsqueeze(1), Mv_mem, Mv_mem
-            )
-            v_self = v_self.squeeze(1)   # (B, D)
+            # Visual self-attention: (B,11,D) queries Mv_mem (B,784,D)
+            v_self, _ = self.att_v_self(Sv, Mv_mem, Mv_mem)            # (B, 11, D)
 
-            # Text→Visual cross-attention: Sv queries Mt_mem
+            # Text→Visual cross-attention
             t2v, _ = self.att_t2v(
-                Sv.unsqueeze(1), Mt_mem, Mt_mem,
-                key_padding_mask=kpm_t_mem,
-            )
-            t2v = t2v.squeeze(1)         # (B, D)
+                Sv, Mt_mem, Mt_mem, key_padding_mask=kpm_t_mem
+            )                                                            # (B, 11, D)
 
-            # Text self-attention: St queries Mt_mem
+            # Text self-attention: (B,11,D) queries Mt_mem (B,4*seq,D)
             t_self, _ = self.att_t_self(
-                St.unsqueeze(1), Mt_mem, Mt_mem,
-                key_padding_mask=kpm_t_mem,
-            )
-            t_self = t_self.squeeze(1)   # (B, D)
+                St, Mt_mem, Mt_mem, key_padding_mask=kpm_t_mem
+            )                                                            # (B, 11, D)
 
-            # Visual→Text cross-attention: St queries Mv_mem
-            v2t, _ = self.att_v2t(
-                St.unsqueeze(1), Mv_mem, Mv_mem
-            )
-            v2t = v2t.squeeze(1)         # (B, D)
+            # Visual→Text cross-attention
+            v2t, _ = self.att_v2t(St, Mv_mem, Mv_mem)                  # (B, 11, D)
 
-            # ── GRU update: visual state ─────────────────────────────────────
-            r_v = torch.sigmoid(self.W_rv(torch.cat([Sv, v_self, t2v, a_v], dim=-1)))
-            z_v = torch.sigmoid(self.W_zv(torch.cat([Sv, v_self, t2v],      dim=-1)))
+            # ── GRU update: visual state (Fa used in both r and z) ───────────
+            r_v = torch.sigmoid(self.W_rv(torch.cat([Sv, v_self, t2v, Fa], dim=-1)))
+            z_v = torch.sigmoid(self.W_zv(torch.cat([Sv, v_self, t2v, Fa], dim=-1)))
             h_v = torch.tanh(   self.W_hv(torch.cat([r_v * Sv, v_self, t2v], dim=-1)))
             Sv = (1 - z_v) * Sv + z_v * h_v
 
             # ── GRU update: text state ───────────────────────────────────────
-            r_t = torch.sigmoid(self.W_rt(torch.cat([St, t_self, v2t, a_t], dim=-1)))
-            z_t = torch.sigmoid(self.W_zt(torch.cat([St, t_self, v2t],      dim=-1)))
+            r_t = torch.sigmoid(self.W_rt(torch.cat([St, t_self, v2t, Fa], dim=-1)))
+            z_t = torch.sigmoid(self.W_zt(torch.cat([St, t_self, v2t, Fa], dim=-1)))
             h_t = torch.tanh(   self.W_ht(torch.cat([r_t * St, t_self, v2t], dim=-1)))
             St = (1 - z_t) * St + z_t * h_t
 
-        return torch.cat([Sv, St], dim=-1)   # (B, D*2 = 4096)
+        # ── Mean-pool over 11 attributes, then concat ────────────────────────
+        return torch.cat([Sv.mean(dim=1), St.mean(dim=1)], dim=-1)   # (B, D*2 = 4096)
 
 
 class catNet(nn.Module):
@@ -306,8 +303,10 @@ class catNet(nn.Module):
     """
 
     def __init__(self, bert, parn_pretrained_path: str = None,
-                 freeze_parn: bool = False):
+                 freeze_parn: bool = False, use_parn_cache: bool = False):
         super().__init__()
+
+        self.use_parn_cache = use_parn_cache
 
         self.txt_enc  = EncoderText(bert)
         self.img_enc  = swin_base_patch4_window7_224_in22k()
@@ -347,7 +346,7 @@ class catNet(nn.Module):
             print(f"catNet Swin: missing keys: {missing[:5]}{'...' if len(missing)>5 else ''}")
         print(f"catNet: loaded img_enc (Swin) weights from {path}")
 
-    def forward(self, image, text, text_mask):
+    def forward(self, image, text, text_mask, parn_g=None, parn_scores=None):
         # ── Text: 4-level hierarchical encoding ─────────────────────────────
         text_groups = self.txt_enc(text, text_mask)   # list of 4 × (B, seq, D)
 
@@ -355,11 +354,14 @@ class catNet(nn.Module):
         stage_outputs = self.img_enc(image)
         # [(B,3136,256),(B,784,512),(B,196,1024),(B,196,1024)] for 448×448
 
-        # ── Attributes: PARN on a 224×224 resized copy ──────────────────────
-        img_small = F.interpolate(
-            image, size=(224, 224), mode='bilinear', align_corners=False
-        )
-        Fa = self.attr_enc(img_small)   # (B, 11, D)
+        # ── Attributes: use cache (only attr_projs) or full ResNet-50 pass ──
+        if self.use_parn_cache and parn_g is not None:
+            Fa = self.attr_enc.forward_from_cache(parn_g, parn_scores)
+        else:
+            img_small = F.interpolate(
+                image, size=(224, 224), mode='bilinear', align_corners=False
+            )
+            Fa = self.attr_enc(img_small)   # (B, 11, D)
 
         # ── Hierarchical cross-modal fusion ──────────────────────────────────
         Mv, Mt = self.fusion(stage_outputs, text_groups, text_mask=text_mask)
