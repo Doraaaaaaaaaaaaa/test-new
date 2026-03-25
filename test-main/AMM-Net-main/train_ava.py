@@ -6,7 +6,8 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.amp import autocast, GradScaler
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 from transformers import BertTokenizer, BertModel
 from scipy.stats import pearsonr, spearmanr
 
