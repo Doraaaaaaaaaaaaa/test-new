@@ -136,7 +136,7 @@ def main():
 
     criterion = emd_loss(dist_r=1)
     optimizer = build_optimizer(model, args.lr)
-    scaler    = GradScaler(amp_dev, enabled=use_amp)
+    scaler    = GradScaler(enabled=use_amp)
 
     # Warmup 5% of total optimiser steps, then cosine decay
     steps_per_epoch = math.ceil(len(train_loader) / args.accum_steps)
