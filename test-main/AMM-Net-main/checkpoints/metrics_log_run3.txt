@@ -1,0 +1,14 @@
+epoch=1 val_emd=0.0509 val_acc=0.8347 val_plcc=0.7767 val_srcc=0.7756
+epoch=2 val_emd=0.0493 val_acc=0.8389 val_plcc=0.7924 val_srcc=0.7882
+epoch=3 val_emd=0.0489 val_acc=0.8394 val_plcc=0.7977 val_srcc=0.7931
+epoch=4 val_emd=0.0486 val_acc=0.8417 val_plcc=0.7983 val_srcc=0.7951
+epoch=5 val_emd=0.0489 val_acc=0.8388 val_plcc=0.8005 val_srcc=0.7951
+epoch=6 val_emd=0.0486 val_acc=0.8397 val_plcc=0.8006 val_srcc=0.7962
+epoch=7 val_emd=0.0483 val_acc=0.8425 val_plcc=0.8014 val_srcc=0.7961
+epoch=8 val_emd=0.0489 val_acc=0.8385 val_plcc=0.7983 val_srcc=0.7930
+epoch=9 val_emd=0.0489 val_acc=0.8388 val_plcc=0.7965 val_srcc=0.7906
+epoch=10 val_emd=0.0487 val_acc=0.8376 val_plcc=0.7943 val_srcc=0.7881
+epoch=11 val_emd=0.0491 val_acc=0.8375 val_plcc=0.7912 val_srcc=0.7854
+epoch=12 val_emd=0.0490 val_acc=0.8351 val_plcc=0.7895 val_srcc=0.7841
+epoch=13 val_emd=0.0493 val_acc=0.8347 val_plcc=0.7870 val_srcc=0.7814
+epoch=14 val_emd=0.0494 val_acc=0.8356 val_plcc=0.7870 val_srcc=0.7813

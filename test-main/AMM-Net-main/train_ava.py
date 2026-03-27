@@ -51,10 +51,10 @@ def build_optimizer(model, lr_base):
     ]
     return optim.AdamW(
         [
-            {"params": slow_params, "lr": lr_base * 0.1},
+            {"params": slow_params, "lr": lr_base * 0.08},
             {"params": fast_params, "lr": lr_base},
         ],
-        weight_decay=1e-4,
+        weight_decay=5e-4,
     )
 
 
@@ -271,9 +271,16 @@ def main():
             "val_emd": val_loss, "val_acc": val_acc,
             "val_plcc": val_plcc, "val_srcc": val_srcc,
         }
-        ckpt_path = os.path.join(checkpoint_dir, f"ammnet_epoch{epoch}.pt")
+        # 记录每轮指标到txt
+        log_path = os.path.join(checkpoint_dir, "metrics_log.txt")
+        with open(log_path, "a") as f:
+            f.write(f"epoch={epoch} val_emd={val_loss:.4f} val_acc={val_acc:.4f} "
+                    f"val_plcc={val_plcc:.4f} val_srcc={val_srcc:.4f}\n")
+
+        # 每epoch保存最新checkpoint（用于断点续训）
+        ckpt_path = os.path.join(checkpoint_dir, "latest.pt")
         torch.save(ckpt_data, ckpt_path)
-        print("Saved:", ckpt_path)
+        print("Saved latest:", ckpt_path)
 
         # Save best model by val_srcc
         if val_srcc > best_srcc:

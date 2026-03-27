@@ -1,0 +1,6 @@
+epoch=1 val_emd=0.0344 val_acc=0.8440 val_plcc=0.7896 val_srcc=0.7872
+epoch=2 val_emd=0.0336 val_acc=0.8408 val_plcc=0.7987 val_srcc=0.7967
+epoch=3 val_emd=0.0336 val_acc=0.8390 val_plcc=0.8011 val_srcc=0.7975
+epoch=4 val_emd=0.0332 val_acc=0.8443 val_plcc=0.8047 val_srcc=0.8009
+epoch=5 val_emd=0.0336 val_acc=0.8409 val_plcc=0.8013 val_srcc=0.7977
+epoch=6 val_emd=0.0334 val_acc=0.8419 val_plcc=0.7994 val_srcc=0.7944
